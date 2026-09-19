@@ -1698,12 +1698,13 @@ const ConnectUI = {
   },
 
   showGeneratedCode(kind, code){
-    if(kind === 'offer'){
-      const h = Utilities.$('#step1Heading');
-      const n = Utilities.$('#step1Num');
-      if(h) h.classList.add('step-done-text');
-      if(n) n.classList.add('step-num-done');
-    }
+    // Mark step 1 as done: for the starter it's "create code" (offer), for
+    // the receiver it's "receive the other side's code" (answer) — both use
+    // the same #step1Heading/#step1Num ids in their own screen render.
+    const h = Utilities.$('#step1Heading');
+    const n = Utilities.$('#step1Num');
+    if(h) h.classList.add('step-done-text');
+    if(n) n.classList.add('step-num-done');
     const label = kind === 'offer' ? 'کد اتصال شما' : 'کد پاسخ شما';
     const wrapId = kind === 'offer' ? '#offerResultWrap' : '#answerResultWrap';
     const stepNum = '۲';
@@ -1742,7 +1743,7 @@ const ConnectUI = {
     this.setStatus('آماده اتصال', 'idle');
     Utilities.$('#connectContent').innerHTML = `
       <div class="card">
-        <h3><span class="step-num">۱</span>دریافت کد طرف مقابل</h3>
+        <h3 id="step1Heading"><span class="step-num" id="step1Num">۱</span>دریافت کد طرف مقابل</h3>
         <p class="card-desc">کدی که طرف مقابل ساخته (Offer) را اینجا Paste کنید.</p>
         <textarea class="code-box" id="offerInput" placeholder="کد دریافتی را اینجا وارد کنید و دکمه ایجاد پاسخ را بزنید"></textarea>
         <div class="btn-row" style="margin-top:10px;">
