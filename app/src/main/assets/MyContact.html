@@ -2197,9 +2197,29 @@ const DataChannelManager = {
     });
   },
 
+  // A safety net: if actual traffic is flowing (a message just arrived or
+  // was sent) but the status pill is still stuck showing "در حال اتصال
+  // مجدد..." or similar from an earlier ICE blip, correct it. This covers
+  // the rare case where the ICE connection quietly recovers without the
+  // oniceconnectionstatechange handler's 'connected' branch firing the
+  // status update (e.g. while a different screen was open).
+  reconcileChatStatusIfStale(){
+    if(!State.pc) return;
+    const ice = State.pc.iceConnectionState;
+    if((ice === 'connected' || ice === 'completed') && !State.connected){
+      State.connected = true;
+      State.reconnectAttempting = false;
+      State.reconnectTriedThisEpisode = false;
+      if(State.finalFailureTimer){ clearTimeout(State.finalFailureTimer); State.finalFailureTimer = null; }
+      if(State.disconnectGraceTimer){ clearTimeout(State.disconnectGraceTimer); State.disconnectGraceTimer = null; }
+      UI.setChatStatus('متصل', 'good');
+    }
+  },
+
   handleIncoming(raw){
     let msg;
     try{ msg = JSON.parse(raw); } catch(e){ return; }
+    this.reconcileChatStatusIfStale();
 
     if(msg.kind === 'hello'){
       State.peerName = msg.name;
@@ -2261,6 +2281,7 @@ const DataChannelManager = {
     const id = Utilities.uid();
     const ok = this.send({kind:'text', id, text});
     if(ok){
+      this.reconcileChatStatusIfStale();
       const m = {id, type:'text', dir:'out', text, time: Utilities.nowTime(), ts: Date.now(), status:'sent', senderName: Storage.safeGet(Storage.KEY_DISPLAY_NAME) || 'من'};
       UI.pushHistory(m); UI.appendMessageEl(m);
     }
@@ -2271,6 +2292,7 @@ const DataChannelManager = {
     const id = Utilities.uid();
     const ok = this.send({kind:'sticker', id, emoji});
     if(ok){
+      this.reconcileChatStatusIfStale();
       const m = {id, type:'sticker', dir:'out', emoji, time: Utilities.nowTime(), ts: Date.now(), status:'sent', senderName: Storage.safeGet(Storage.KEY_DISPLAY_NAME) || 'من'};
       UI.pushHistory(m); UI.appendMessageEl(m);
     }
@@ -2364,6 +2386,7 @@ const FileTransfer = {
     }
     const transferId = Utilities.uid();
     DataChannelManager.send({kind:'file-meta', transferId, name: file.name, size: file.size, mime: file.type});
+    DataChannelManager.reconcileChatStatusIfStale();
 
     // A local copy for the sender's own bubble — separate from the actual
     // chunked transfer below. Persisted to IndexedDB so it survives a
@@ -2708,6 +2731,10 @@ function bootstrap(){
   // Periodically fail any file transfer that's gone quiet for too long
   // (connection nominally still open, but no chunks/progress moving).
   setInterval(() => FileTransfer.checkStalledTransfers(), 5000);
+  // Catch-all: even with no messages going back and forth, don't let the
+  // status pill stay stuck on a stale "reconnecting/disconnected" label if
+  // the connection has actually recovered.
+  setInterval(() => DataChannelManager.reconcileChatStatusIfStale(), 4000);
 
   // Received-file Blob URLs only live for this page's lifetime — release
   // them as soon as the page is actually going away (best-effort; also
