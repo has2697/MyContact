@@ -115,6 +115,14 @@ button{ cursor: pointer; }
 }
 .icon-btn:active{ transform: scale(0.94); }
 
+.topbar-row{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+}
+
 .status-pill{
   display: inline-flex;
   align-items: center;
@@ -198,7 +206,7 @@ button{ cursor: pointer; }
 .choice-card .cc-desc{ color: #000000; }
 
 /* ---------- Connect screen (starter / "create new code") ---------- */
-#screen-connect.starter-mode{ background: linear-gradient(160deg,#22C55E 0%,#86EFAC 100%); }
+#screen-connect.starter-mode{ background: linear-gradient(160deg,#BFE3FA 0%,#EAF6FF 100%); }
 #screen-connect.starter-mode #signalingStatusPill{ display: none; }
 #screen-connect.receiver-mode{ background: linear-gradient(160deg,#8B5CF6 0%,#C4B5FD 52%,#FBCFE8 100%); }
 #screen-connect.receiver-mode .topbar{ background: rgba(255,255,255,.72); border-bottom-color: rgba(255,255,255,.55); }
@@ -386,6 +394,8 @@ textarea.code-box{
   align-items:center; justify-content:center; font-size:12px; font-weight:800;
   margin-inline-end: 8px;
 }
+.step-done-text{ color: var(--ink-faint) !important; }
+.step-num.step-num-done{ background: var(--ink-faint) !important; }
 
 /* ---------- Chat screen ---------- */
 .msg-row{ display: flex; margin-bottom: 10px; }
@@ -493,7 +503,7 @@ textarea.code-box{
 
 
 /* ---------- Colorful Settings screen ---------- */
-#screen-settings{background:linear-gradient(160deg,#fff7fb 0%,#f4f0ff 48%,#eefaff 100%)}
+#screen-settings{background:linear-gradient(160deg,#F2FBF3 0%,#E3F7E6 48%,#D7F2DD 100%)}
 #screen-settings .topbar{background:rgba(255,255,255,.78);backdrop-filter:blur(12px);border-bottom:1px solid rgba(160,120,190,.14)}
 #screen-settings .topbar h1{font-family:Georgia,"Times New Roman",serif;font-size:22px;font-weight:900;color:#6b3d83;letter-spacing:.2px;text-align:center;flex:1}
 #screen-settings .content{padding:18px 14px 30px}
@@ -528,7 +538,11 @@ textarea.code-box{
   background: #DCEEFB;
 }
 #screen-chat .topbar{
-  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  padding: 10px 14px 12px;
   background: linear-gradient(135deg,#EAF6FF,#CFE9FA);
   border-bottom: 1px solid rgba(30,90,140,.18);
   box-shadow: 0 4px 18px rgba(30,90,140,.10);
@@ -733,14 +747,20 @@ textarea.code-box{
   <!-- ============ CHAT SCREEN ============ -->
   <section class="screen" id="screen-chat">
     <div class="topbar">
-      <button class="icon-btn" id="btnChatBack" aria-label="بازگشت">‹</button>
-      <div style="flex:1; min-width:0;">
-        <h1 style="font-size:15px;" id="chatPeerTitle">تماس من</h1>
-        <div class="peer-name-row" id="chatPeerSub">به کسی متصل نیستید</div>
+      <div class="topbar-row">
+        <button class="icon-btn" id="btnChatBack" aria-label="بازگشت">‹</button>
+        <div style="display:flex; gap:8px;">
+          <button class="icon-btn" id="btnChatSettings" aria-label="تنظیمات">⚙️</button>
+          <button class="icon-btn" id="btnStartCall" aria-label="تماس صوتی/تصویری">📞</button>
+        </div>
       </div>
-      <span class="status-pill status-idle" id="chatStatusPill"><span class="status-dot"></span><span id="chatStatusText">قطع</span></span>
-      <button class="icon-btn" id="btnChatSettings" aria-label="تنظیمات">⚙️</button>
-      <button class="icon-btn" id="btnStartCall" aria-label="تماس صوتی/تصویری">📞</button>
+      <div class="topbar-row">
+        <div style="flex:1; min-width:0;">
+          <h1 style="font-size:15px;" id="chatPeerTitle">تماس من</h1>
+          <div class="peer-name-row" id="chatPeerSub">به کسی متصل نیستید</div>
+        </div>
+        <span class="status-pill status-idle" id="chatStatusPill"><span class="status-dot"></span><span id="chatStatusText">قطع</span></span>
+      </div>
     </div>
     <div class="content" id="chatMessages">
       <div class="center-empty" id="chatEmptyState">هنوز پیامی نیست. برای شروع باید ابتدا اتصال برقرار شود.</div>
@@ -1652,8 +1672,8 @@ const ConnectUI = {
     UI.clearConnectLog();
     this.setStatus('آماده اتصال', 'idle');
     Utilities.$('#connectContent').innerHTML = `
-      <div class="card">
-        <h3><span class="step-num">۱</span>ساخت کد اتصال</h3>
+      <div class="card" id="step1Card">
+        <h3 id="step1Heading"><span class="step-num" id="step1Num">۱</span>ساخت کد اتصال</h3>
         <p class="card-desc">کد اتصال در حال ساخته شدن است؛ وقتی آماده شد، آن را برای طرف مقابل بفرستید.</p>
         <button class="btn btn-primary" id="btnCreateOffer">ساخت دوباره کد</button>
       </div>
@@ -1678,6 +1698,12 @@ const ConnectUI = {
   },
 
   showGeneratedCode(kind, code){
+    if(kind === 'offer'){
+      const h = Utilities.$('#step1Heading');
+      const n = Utilities.$('#step1Num');
+      if(h) h.classList.add('step-done-text');
+      if(n) n.classList.add('step-num-done');
+    }
     const label = kind === 'offer' ? 'کد اتصال شما' : 'کد پاسخ شما';
     const wrapId = kind === 'offer' ? '#offerResultWrap' : '#answerResultWrap';
     const stepNum = '۲';
@@ -1773,8 +1799,23 @@ function insecureContextHint(){
 async function Signaling_share(code, kind){
   const title = kind === 'offer' ? 'کد اتصال تماس من' : 'کد پاسخ تماس من';
   // Always copy the code to the clipboard first, so it's available to paste
-  // manually even if the share sheet is cancelled or unavailable.
+  // manually even if the share sheet is cancelled/unavailable either way.
   const copied = await copyToClipboard(code);
+
+  // Inside the Android app, MainActivity registers a JS bridge object called
+  // "AndroidShare" that opens the real Android share sheet (Intent.ACTION_SEND).
+  // This works in the app's WebView, unlike navigator.share below, which
+  // standard Android WebViews do not implement at all.
+  if(window.AndroidShare && typeof window.AndroidShare.shareText === 'function'){
+    try{
+      window.AndroidShare.shareText(code, title);
+      if(copied) Utilities.toast('کد کپی شد و صفحه اشتراک‌گذاری باز شد.');
+      return;
+    }catch(e){
+      // fall through to the web-standard/clipboard fallbacks below
+    }
+  }
+
   if(navigator.share){
     try{
       // This is what actually opens the OS share sheet (WhatsApp, Telegram,
