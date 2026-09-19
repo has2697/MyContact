@@ -414,6 +414,8 @@ textarea.code-box{
 .msg-row.me .bubble{ background: var(--bubble-me); color: var(--bubble-me-ink); border-bottom-left-radius: 4px; }
 .msg-row.them .bubble{ background: var(--bubble-them); color: var(--bubble-them-ink); border: 1px solid var(--border); border-bottom-right-radius: 4px; }
 .msg-meta{ display: block; font-size: 10.5px; opacity: .7; margin-top: 4px; text-align: left; }
+.msg-tick{ margin-inline-start: 4px; letter-spacing: -2px; font-size: 12px; }
+.msg-tick.seen{ color: #2E9BE6; opacity: 1; }
 .msg-sender-name{ display:block; font-size: calc(12px * var(--chat-font-scale, 1)); font-weight: 800; margin-bottom: 3px; }
 .msg-row.me .msg-sender-name{ color: #2E6B1F; }
 .msg-row.them .msg-sender-name{ color: #1E4E75; }
@@ -423,8 +425,43 @@ textarea.code-box{
 .msg-file .f-info span{ font-size: 11px; opacity: .75; }
 .msg-file a{ color: inherit; text-decoration: underline; }
 .system-note{ text-align:center; font-size: 12px; color: var(--ink-faint); margin: 10px 0; }
+.date-sep{ text-align:center; margin: 14px 0 10px; }
+.date-sep span{
+  display:inline-block; padding:4px 14px; border-radius:14px;
+  background: rgba(0,0,0,.06); color: var(--ink-faint); font-size: 12px; font-weight:600;
+}
 
 .composer{ display: flex; align-items: flex-end; gap: 8px; }
+.sticker-panel{
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 6px;
+  padding: 10px 6px;
+  margin-bottom: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  max-height: 160px;
+  overflow-y: auto;
+}
+.sticker-panel button{
+  font-size: 26px;
+  line-height: 1;
+  background: transparent;
+  border: none;
+  border-radius: 10px;
+  padding: 8px 0;
+  cursor: pointer;
+}
+.sticker-panel button:active{ background: rgba(0,0,0,.06); }
+.bubble.sticker-bubble{
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+}
+.bubble.sticker-bubble .sticker-emoji{ font-size: 56px; line-height: 1; display:block; }
+.bubble.sticker-bubble .msg-meta{ text-align: center; }
 .composer textarea{
   flex: 1; resize: none; max-height: 110px; min-height: 44px;
   padding: 11px 14px; border-radius: 22px;
@@ -766,8 +803,10 @@ textarea.code-box{
       <div class="center-empty" id="chatEmptyState">هنوز پیامی نیست. برای شروع باید ابتدا اتصال برقرار شود.</div>
     </div>
     <div class="bottombar">
+      <div class="sticker-panel hidden" id="stickerPanel"></div>
       <div class="composer">
         <button class="round-btn file" id="btnAttachFile" aria-label="ارسال فایل">📎</button>
+        <button class="round-btn file" id="btnStickerPicker" aria-label="استیکر">😊</button>
         <textarea id="chatInput" rows="1" placeholder="پیام..." disabled></textarea>
         <button class="round-btn send" id="btnSendMsg" aria-label="ارسال" disabled>➤</button>
       </div>
@@ -841,12 +880,23 @@ const MAX_HISTORY = 400;
 
 /* ---------------------------- Storage ----------------------------------- */
 const Storage = {
-  KEY_HISTORY: 'mycontact_history_v1',
+  KEY_HISTORY_PREFIX: 'mycontact_history_v1__',
   KEY_DISPLAY_NAME: 'mycontact_display_name_v1',
   KEY_TURN_DOMAIN: 'mycontact_turn_domain_v1',
   KEY_TURN_KEY: 'mycontact_turn_key_v1',
   KEY_FONT_SCALE: 'mycontact_font_scale_v1',
   KEY_NOTIFY_ENABLED: 'mycontact_notify_enabled_v1',
+
+  // Which contact's history bucket is currently active — set once the
+  // peer's name arrives via their 'hello' message. Until then (or if a
+  // name is somehow blank), messages fall into the shared "pending" bucket
+  // below and get merged into the right contact once we know who it is.
+  currentContactKey: null,
+
+  contactStorageKey(name){
+    const norm = (name || '').trim().toLowerCase();
+    return this.KEY_HISTORY_PREFIX + encodeURIComponent(norm || 'pending');
+  },
 
   safeGet(key){
     try { return localStorage.getItem(key); }
@@ -856,24 +906,43 @@ const Storage = {
     try { localStorage.setItem(key, value); return true; }
     catch(e){ Utilities.toast('حافظه ذخیره‌سازی پر است یا در دسترس نیست'); return false; }
   },
-  loadHistory(){
-    const raw = this.safeGet(this.KEY_HISTORY);
+
+  // Loads this specific contact's own saved chat history (separate from
+  // every other contact's), and merges in anything sent/received in the
+  // brief moment before we knew their name.
+  loadHistoryFor(peerName){
+    this.currentContactKey = this.contactStorageKey(peerName);
+    const raw = this.safeGet(this.currentContactKey);
+    let history = [];
     if(raw){
-      try{ State.history = JSON.parse(raw); }catch(e){ State.history = []; }
+      try{ history = JSON.parse(raw); }catch(e){ history = []; }
     }
+    const pendingKey = this.contactStorageKey(null);
+    if(this.currentContactKey !== pendingKey){
+      const pendingRaw = this.safeGet(pendingKey);
+      if(pendingRaw){
+        try{
+          const pending = JSON.parse(pendingRaw);
+          if(pending && pending.length){
+            history = history.concat(pending);
+            history.sort((a,b) => (a.ts||0) - (b.ts||0));
+          }
+        }catch(e){}
+        this.safeSet(pendingKey, JSON.stringify([]));
+      }
+    }
+    State.history = history;
     // Any file transfer that wasn't finished when the page was last saved
     // (progress < 100, no failure recorded yet) can never complete now —
     // the in-memory buffers/blobs that were carrying it are gone. Mark it
     // failed instead of leaving a "در حال انتقال..." message stuck forever.
-    let changed = false;
     State.history.forEach(m => {
       if(m.type === 'file' && m.progress !== 100 && m.status !== 'failed'){
         m.status = 'failed';
         m.failReason = 'این انتقال قبل از تکمیل، با بستن یا رفرش صفحه ناتمام ماند.';
-        changed = true;
       }
     });
-    if(changed) this.saveHistory();
+    this.saveHistory();
   },
   saveHistory(){
     if(State.history.length > MAX_HISTORY){
@@ -897,17 +966,20 @@ const Storage = {
       }
       return m;
     });
-    this.safeSet(this.KEY_HISTORY, JSON.stringify(persistable));
+    const key = this.currentContactKey || this.contactStorageKey(null);
+    this.safeSet(key, JSON.stringify(persistable));
   },
   revokeAllBlobUrls(){
     State.blobUrls.forEach(u => { try{ URL.revokeObjectURL(u); }catch(e){} });
     State.blobUrls = [];
   },
+  // Clears only the currently-open contact's history, not everyone else's.
   clearHistory(){
     this.revokeAllBlobUrls();
     FileStore.clearAll();
     State.history = [];
-    this.safeSet(this.KEY_HISTORY, JSON.stringify([]));
+    const key = this.currentContactKey || this.contactStorageKey(null);
+    this.safeSet(key, JSON.stringify([]));
   },
   clearAll(){
     this.revokeAllBlobUrls();
@@ -1036,6 +1108,11 @@ const SoundFX = {
     // low descending tone that reads as "didn't work"
     this.tone(392.00, 0,    0.20, 0.20, 'sawtooth');
     this.tone(293.66, 0.20, 0.34, 0.20, 'sawtooth');
+  },
+  playMessageBell(){
+    // short two-note "ping" for a new message while the app is minimized
+    this.tone(880.00, 0,    0.09, 0.16);
+    this.tone(1046.5, 0.09, 0.16, 0.14);
   }
 };
 // Audio can only start after a user gesture in most browsers/WebViews —
@@ -1063,6 +1140,58 @@ const Utilities = {
   nowTime(){
     const d = new Date();
     return d.toLocaleTimeString('fa-IR', {hour:'2-digit', minute:'2-digit'});
+  },
+
+  toPersianDigits(val){
+    const map = {'0':'۰','1':'۱','2':'۲','3':'۳','4':'۴','5':'۵','6':'۶','7':'۷','8':'۸','9':'۹'};
+    return String(val).replace(/[0-9]/g, d => map[d]);
+  },
+
+  // Gregorian -> Jalali (Shamsi) conversion. Standard, widely-used algorithm.
+  toJalali(date){
+    let gy = date.getFullYear(), gm = date.getMonth() + 1, gd = date.getDate();
+    const g_d_m = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+    let jy = (gy <= 1600) ? 0 : 979;
+    gy -= (gy <= 1600) ? 621 : 1600;
+    const gy2 = (gm > 2) ? (gy + 1) : gy;
+    let days = (365 * gy) + Math.floor((gy2 + 3) / 4) - Math.floor((gy2 + 99) / 100) +
+      Math.floor((gy2 + 399) / 400) - 80 + gd + g_d_m[gm - 1];
+    jy += 33 * Math.floor(days / 12053);
+    days %= 12053;
+    jy += 4 * Math.floor(days / 1461);
+    days %= 1461;
+    if(days > 365){
+      jy += Math.floor((days - 1) / 365);
+      days = (days - 1) % 365;
+    }
+    let jm, jd;
+    if(days < 186){
+      jm = 1 + Math.floor(days / 31);
+      jd = 1 + (days % 31);
+    } else {
+      jm = 7 + Math.floor((days - 186) / 30);
+      jd = 1 + ((days - 186) % 30);
+    }
+    return {jy, jm, jd};
+  },
+
+  JALALI_MONTHS: ['فروردین','اردیبهشت','خرداد','تیر','مرداد','شهریور','مهر','آبان','آذر','دی','بهمن','اسفند'],
+
+  // Grouping key for "same calendar day" (Gregorian y-m-d is fine here —
+  // it's only used to detect a day boundary, the *label* shown is Shamsi).
+  dayKey(date){
+    return date.getFullYear() + '-' + date.getMonth() + '-' + date.getDate();
+  },
+
+  // "امروز" / "دیروز" / full Shamsi date, like Telegram's day separators
+  // but in the Persian calendar instead of Gregorian.
+  dayLabel(date){
+    const today = new Date();
+    const yesterday = new Date(); yesterday.setDate(today.getDate() - 1);
+    if(this.dayKey(date) === this.dayKey(today)) return 'امروز';
+    if(this.dayKey(date) === this.dayKey(yesterday)) return 'دیروز';
+    const {jy, jm, jd} = this.toJalali(date);
+    return this.toPersianDigits(jd) + ' ' + this.JALALI_MONTHS[jm - 1] + ' ' + this.toPersianDigits(jy);
   },
 
   formatBytes(n){
@@ -1193,6 +1322,7 @@ const UI = {
   renderHistory(){
     const box = Utilities.$('#chatMessages');
     box.innerHTML = '';
+    State.lastRenderedDayKey = null;
     if(State.history.length === 0){
       box.innerHTML = '<div class="center-empty" id="chatEmptyState">هنوز پیامی نیست.</div>';
       return;
@@ -1201,10 +1331,28 @@ const UI = {
     box.scrollTop = box.scrollHeight;
   },
 
+  // Inserts a "امروز / دیروز / <shamsi date>" pill above the first message
+  // of a new calendar day. Messages loaded from old history saved before
+  // this feature existed have no .ts — skip the separator for those rather
+  // than guessing a date.
+  maybeInsertDaySeparator(ts){
+    if(!ts) return;
+    const d = new Date(ts);
+    const key = Utilities.dayKey(d);
+    if(State.lastRenderedDayKey === key) return;
+    State.lastRenderedDayKey = key;
+    const box = Utilities.$('#chatMessages');
+    const sep = document.createElement('div');
+    sep.className = 'date-sep';
+    sep.innerHTML = '<span>' + Utilities.dayLabel(d) + '</span>';
+    box.appendChild(sep);
+  },
+
   appendMessageEl(m, scroll=true){
     const box = Utilities.$('#chatMessages');
     const empty = Utilities.$('#chatEmptyState');
     if(empty) empty.remove();
+    if(m.type !== 'system') this.maybeInsertDaySeparator(m.ts);
 
     if(m.type === 'system'){
       const div = document.createElement('div');
@@ -1225,7 +1373,18 @@ const UI = {
         bubble.appendChild(nameEl);
       }
 
-      if(m.type === 'file'){
+      if(m.type === 'sticker'){
+        bubble.classList.add('sticker-bubble');
+        const emojiEl = document.createElement('span');
+        emojiEl.className = 'sticker-emoji';
+        emojiEl.textContent = m.emoji;
+        bubble.appendChild(emojiEl);
+        const meta = document.createElement('span');
+        meta.className = 'msg-meta';
+        meta.textContent = m.time;
+        this.appendTick(meta, m);
+        bubble.appendChild(meta);
+      } else if(m.type === 'file'){
         const fileWrap = document.createElement('div');
         fileWrap.innerHTML = `<div class="msg-file"><span class="f-icon">📄</span>
           <div class="f-info"><b>${Utilities.escapeHtml(m.fileName)}</b><span>${Utilities.formatBytes(m.fileSize)}</span></div></div>`;
@@ -1263,6 +1422,7 @@ const UI = {
         const meta = document.createElement('span');
         meta.className = 'msg-meta';
         meta.textContent = m.time;
+        this.appendTick(meta, m);
         bubble.appendChild(meta);
       } else {
         const textEl = document.createElement('div');
@@ -1271,12 +1431,34 @@ const UI = {
         const meta = document.createElement('span');
         meta.className = 'msg-meta';
         meta.textContent = m.time;
+        this.appendTick(meta, m);
         bubble.appendChild(meta);
       }
       row.appendChild(bubble);
       box.appendChild(row);
     }
     if(scroll) box.scrollTop = box.scrollHeight;
+  },
+
+  // Read-receipt tick (✓ sent / ✓✓ seen) — only for our own outgoing messages.
+  appendTick(meta, m){
+    if(m.dir !== 'out') return;
+    const tick = document.createElement('span');
+    tick.className = 'msg-tick' + (m.status === 'seen' ? ' seen' : '');
+    tick.textContent = m.status === 'seen' ? '✓✓' : '✓';
+    if(m.id) tick.dataset.msgId = m.id;
+    meta.appendChild(tick);
+  },
+
+  // Called when a 'seen' receipt arrives from the peer for one of our own
+  // outgoing messages — upgrades it from a single to a double tick.
+  markMessageSeen(id){
+    if(!id) return;
+    const entry = State.history.find(h => h.id === id);
+    if(entry) entry.status = 'seen';
+    Storage.saveHistory();
+    const tickEl = Utilities.$('.msg-tick[data-msg-id="' + id + '"]');
+    if(tickEl){ tickEl.textContent = '✓✓'; tickEl.classList.add('seen'); }
   },
 
   // Looks up a completed file transfer in IndexedDB and, if still there,
@@ -1909,6 +2091,44 @@ async function Signaling_share(code, kind, opts){
   }
 }
 
+/* ---------------------------- Read receipts ------------------------------ */
+// Tracks incoming message ids that arrived while the app was minimized/
+// backgrounded (document.hidden). We don't send the "seen" receipt for
+// those right away — only once the person actually brings the app back to
+// the foreground, matching how Telegram's double-tick works.
+const ReadReceipts = {
+  pendingIds: [],
+  queuePending(id){
+    if(id) this.pendingIds.push(id);
+  },
+  sendSeen(ids){
+    if(!ids || !ids.length) return;
+    DataChannelManager.send({kind:'seen', ids});
+  },
+  flushPending(){
+    if(this.pendingIds.length === 0) return;
+    this.sendSeen(this.pendingIds);
+    this.pendingIds = [];
+  },
+  // Call for every freshly-received message: sends the receipt immediately
+  // if the app is in the foreground, otherwise queues it (and the caller
+  // plays the short message-bell sound instead).
+  handleIncomingMessage(id){
+    const isForeground = !document.hidden && document.hasFocus();
+    if(isForeground){
+      this.sendSeen([id]);
+    } else {
+      this.queuePending(id);
+      SoundFX.playMessageBell();
+    }
+    return isForeground;
+  }
+};
+document.addEventListener('visibilitychange', () => {
+  if(!document.hidden) ReadReceipts.flushPending();
+});
+window.addEventListener('focus', () => ReadReceipts.flushPending());
+
 /* ---------------------------- DataChannel manager ------------------------ */
 const DataChannelManager = {
   bind(channel){
@@ -1985,20 +2205,40 @@ const DataChannelManager = {
       State.peerName = msg.name;
       Utilities.$('#chatPeerTitle').textContent = msg.name;
       Utilities.$('#chatPeerSub').textContent = 'آنلاین';
+      // Each contact (identified by the name they send here) gets their own
+      // separate, private chat history — switch to theirs now that we know
+      // who this is, instead of one history shared across everyone.
+      Storage.loadHistoryFor(msg.name);
+      UI.renderHistory();
       return;
     }
     if(msg.kind === 'text'){
-      const m = {type:'text', dir:'in', text: msg.text, time: Utilities.nowTime(), senderName: State.peerName};
+      const id = msg.id || Utilities.uid();
+      const m = {id, type:'text', dir:'in', text: msg.text, time: Utilities.nowTime(), ts: Date.now(), senderName: State.peerName};
       UI.pushHistory(m); UI.appendMessageEl(m);
+      ReadReceipts.handleIncomingMessage(id);
       NotificationsManager.notify(State.peerName || 'پیام جدید', msg.text.length > 80 ? msg.text.slice(0,80) + '…' : msg.text);
       return;
     }
     if(msg.kind === 'file-meta'){
       State.fileRecvBuffers[msg.transferId] = {name: msg.name, size: msg.size, mime: msg.mime, chunks: [], received: 0};
       State.activeTransfers[msg.transferId] = {dir:'in', lastActivity: Date.now()};
-      const m = {type:'file', dir:'in', fileName: msg.name, fileSize: msg.size, time: Utilities.nowTime(), transferId: msg.transferId, progress: 0, senderName: State.peerName};
+      const m = {id: msg.transferId, type:'file', dir:'in', fileName: msg.name, fileSize: msg.size, time: Utilities.nowTime(), ts: Date.now(), transferId: msg.transferId, progress: 0, senderName: State.peerName};
       UI.pushHistory(m); UI.appendMessageEl(m);
+      ReadReceipts.handleIncomingMessage(msg.transferId);
       NotificationsManager.notify(State.peerName || 'پیام جدید', 'یک فایل ارسال کرد: ' + msg.name);
+      return;
+    }
+    if(msg.kind === 'sticker'){
+      const id = msg.id || Utilities.uid();
+      const m = {id, type:'sticker', dir:'in', emoji: msg.emoji, time: Utilities.nowTime(), ts: Date.now(), senderName: State.peerName};
+      UI.pushHistory(m); UI.appendMessageEl(m);
+      ReadReceipts.handleIncomingMessage(id);
+      NotificationsManager.notify(State.peerName || 'پیام جدید', 'یک استیکر فرستاد ' + msg.emoji);
+      return;
+    }
+    if(msg.kind === 'seen'){
+      (msg.ids || []).forEach(id => UI.markMessageSeen(id));
       return;
     }
     if(msg.kind === 'file-chunk'){
@@ -2018,9 +2258,20 @@ const DataChannelManager = {
   },
 
   sendText(text){
-    const ok = this.send({kind:'text', text});
+    const id = Utilities.uid();
+    const ok = this.send({kind:'text', id, text});
     if(ok){
-      const m = {type:'text', dir:'out', text, time: Utilities.nowTime(), senderName: Storage.safeGet(Storage.KEY_DISPLAY_NAME) || 'من'};
+      const m = {id, type:'text', dir:'out', text, time: Utilities.nowTime(), ts: Date.now(), status:'sent', senderName: Storage.safeGet(Storage.KEY_DISPLAY_NAME) || 'من'};
+      UI.pushHistory(m); UI.appendMessageEl(m);
+    }
+    return ok;
+  },
+
+  sendSticker(emoji){
+    const id = Utilities.uid();
+    const ok = this.send({kind:'sticker', id, emoji});
+    if(ok){
+      const m = {id, type:'sticker', dir:'out', emoji, time: Utilities.nowTime(), ts: Date.now(), status:'sent', senderName: Storage.safeGet(Storage.KEY_DISPLAY_NAME) || 'من'};
       UI.pushHistory(m); UI.appendMessageEl(m);
     }
     return ok;
@@ -2121,7 +2372,7 @@ const FileTransfer = {
     State.blobUrls.push(localUrl);
     FileStore.saveFile(transferId, file, file.name, file.type);
 
-    const m = {type:'file', dir:'out', fileName: file.name, fileSize: file.size, time: Utilities.nowTime(), transferId, progress: 0, url: localUrl, senderName: Storage.safeGet(Storage.KEY_DISPLAY_NAME) || 'من'};
+    const m = {id: transferId, type:'file', dir:'out', fileName: file.name, fileSize: file.size, time: Utilities.nowTime(), ts: Date.now(), transferId, progress: 0, url: localUrl, status:'sent', senderName: Storage.safeGet(Storage.KEY_DISPLAY_NAME) || 'من'};
     UI.pushHistory(m); UI.appendMessageEl(m);
     State.activeTransfers[transferId] = {dir:'out', lastActivity: Date.now()};
 
@@ -2430,6 +2681,13 @@ const ErrorHandling = {
 /* ---------------------------- Connect flow controller --------------------- */
 const ConnectManager = {
   goToChat(){
+    // Clear whatever was on screen from a previous contact/session — the
+    // real history for *this* connection loads in a moment, once their
+    // 'hello' message tells us who we're actually talking to.
+    State.history = [];
+    State.peerName = null;
+    Storage.currentContactKey = null;
+    UI.renderHistory();
     UI.showScreen('chat');
     Utilities.$('#chatPeerSub').textContent = 'آنلاین';
     UI.setChatStatus('متصل', 'good');
@@ -2438,8 +2696,9 @@ const ConnectManager = {
 
 /* ---------------------------- Wiring / bootstrap --------------------------- */
 function bootstrap(){
-  Storage.loadHistory();
-  UI.renderHistory();
+  // Chat history is per-contact now (keyed by the name exchanged when a
+  // connection opens), so nothing is loaded/rendered here — it happens in
+  // the 'hello' handler once we actually know who we're talking to.
 
   const compatError = Utilities.checkCompatibility();
   if(compatError){
@@ -2647,6 +2906,24 @@ function bootstrap(){
       {label: '🖼️ انتخاب از گالری', primary: true, onPick: () => Utilities.$('#galleryInput').click()},
       {label: '📄 انتخاب فایل', primary: false, onPick: () => Utilities.$('#fileInput').click()}
     ]);
+  };
+
+  // Sticker picker: a small built-in set (Android WebView text fields can't
+  // receive stickers/GIFs from the system keyboard's sticker tray, so this
+  // in-app picker is the working alternative).
+  const STICKER_SET = ['👍','❤️','😂','😮','😢','🙏','🎉','🔥','👏','😍','🥳','🤝','😴','🤔','😅','🎂'];
+  const stickerPanel = Utilities.$('#stickerPanel');
+  stickerPanel.innerHTML = STICKER_SET.map(e => `<button type="button">${e}</button>`).join('');
+  stickerPanel.querySelectorAll('button').forEach((btn, i) => {
+    btn.onclick = () => {
+      if(!State.dcOpen){ Utilities.toast('برای ارسال استیکر باید متصل باشید.'); return; }
+      DataChannelManager.sendSticker(STICKER_SET[i]);
+      stickerPanel.classList.add('hidden');
+    };
+  });
+  Utilities.$('#btnStickerPicker').onclick = () => {
+    if(!State.dcOpen){ Utilities.toast('برای ارسال استیکر باید متصل باشید.'); return; }
+    stickerPanel.classList.toggle('hidden');
   };
   // Sends however many files the user picked, one after another (waits for
   // each to finish before starting the next), instead of only the first.
