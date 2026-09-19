@@ -996,6 +996,53 @@ const FileStore = {
 };
 
 /* ---------------------------- Utilities --------------------------------- */
+/* ---------------------------- Sound feedback ------------------------ */
+// Short success/failure tones generated with WebAudio — no audio file
+// needed, so nothing extra to bundle in the app.
+const SoundFX = {
+  ctxRef: null,
+  ctx(){
+    if(!this.ctxRef){
+      try{ this.ctxRef = new (window.AudioContext || window.webkitAudioContext)(); }
+      catch(e){ this.ctxRef = null; }
+    }
+    if(this.ctxRef && this.ctxRef.state === 'suspended'){
+      this.ctxRef.resume().catch(() => {});
+    }
+    return this.ctxRef;
+  },
+  tone(freq, startTime, duration, peakGain, type){
+    const ctx = this.ctx();
+    if(!ctx) return;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = type || 'sine';
+    osc.frequency.value = freq;
+    const t0 = ctx.currentTime + startTime;
+    gain.gain.setValueAtTime(0, t0);
+    gain.gain.linearRampToValueAtTime(peakGain, t0 + 0.02);
+    gain.gain.linearRampToValueAtTime(0, t0 + duration);
+    osc.connect(gain).connect(ctx.destination);
+    osc.start(t0);
+    osc.stop(t0 + duration + 0.05);
+  },
+  playConnected(){
+    // short cheerful ascending melody
+    this.tone(523.25, 0,    0.12, 0.20);
+    this.tone(659.25, 0.12, 0.12, 0.20);
+    this.tone(783.99, 0.24, 0.24, 0.22);
+  },
+  playFailed(){
+    // low descending tone that reads as "didn't work"
+    this.tone(392.00, 0,    0.20, 0.20, 'sawtooth');
+    this.tone(293.66, 0.20, 0.34, 0.20, 'sawtooth');
+  }
+};
+// Audio can only start after a user gesture in most browsers/WebViews —
+// warm the context up on the very first tap anywhere in the app so it's
+// ready by the time a connection actually succeeds or fails.
+window.addEventListener('pointerdown', () => SoundFX.ctx(), {once:true});
+
 const Utilities = {
   $(sel){ return document.querySelector(sel); },
   $all(sel){ return Array.from(document.querySelectorAll(sel)); },
@@ -1709,21 +1756,38 @@ const ConnectUI = {
     const wrapId = kind === 'offer' ? '#offerResultWrap' : '#answerResultWrap';
     const stepNum = '۲';
     const heading = `<span class="step-num">${stepNum}</span>${label} آماده است`;
-    const actions = kind === 'offer'
-      ? `<button class="btn btn-accent" id="btnShare-${kind}">کپی و ارسال کد اتصال</button>`
-      : `<button class="btn btn-accent" id="btnShare-${kind}">ارسال کد پاسخ</button>`;
+    const defaultLabel = kind === 'offer' ? 'کپی و ارسال کد اتصال' : 'ارسال کد پاسخ';
     const html = `
       <div class="card">
         <h3>${heading}</h3>
         <p class="card-desc">این کد را کپی یا از طریق برنامه‌های دیگر ارسال کنید.</p>
         <textarea class="code-box" readonly id="genCode-${kind}">${code}</textarea>
-        <div class="btn-row" style="margin-top:10px;">
-          ${actions}
+        <div class="btn-row" style="margin-top:10px; flex-wrap:wrap;">
+          <button class="btn btn-accent" id="btnShare-${kind}">${defaultLabel}</button>
+          <button class="btn btn-ghost hidden" id="btnShareOther-${kind}" style="font-size:13px;">ارسال با برنامه دیگر</button>
         </div>
       </div>`;
     const target = Utilities.$(wrapId);
     if(target){ target.innerHTML = html; }
-    Utilities.$('#btnShare-' + kind).onclick = () => Signaling_share(code, kind);
+
+    // If the app remembers which share app was picked last time, offer it
+    // directly as the main button (skips the chooser) with a small secondary
+    // button to pick a different app instead.
+    let lastTarget = null;
+    if(window.AndroidShare && typeof window.AndroidShare.getLastShareTarget === 'function'){
+      try{
+        const raw = window.AndroidShare.getLastShareTarget();
+        if(raw) lastTarget = JSON.parse(raw);
+      }catch(e){ lastTarget = null; }
+    }
+    const mainBtn = Utilities.$('#btnShare-' + kind);
+    const otherBtn = Utilities.$('#btnShareOther-' + kind);
+    if(lastTarget && lastTarget.label){
+      mainBtn.textContent = 'ارسال با ' + lastTarget.label;
+      otherBtn.classList.remove('hidden');
+      otherBtn.onclick = () => Signaling_share(code, kind, { forceChooser: true });
+    }
+    mainBtn.onclick = () => Signaling_share(code, kind, { targetPackage: lastTarget ? lastTarget.package : '' });
 
     if(kind === 'offer'){
       Utilities.$('#answerCard').classList.remove('hidden');
@@ -1797,7 +1861,8 @@ function insecureContextHint(){
     : '';
 }
 
-async function Signaling_share(code, kind){
+async function Signaling_share(code, kind, opts){
+  opts = opts || {};
   const title = kind === 'offer' ? 'کد اتصال تماس من' : 'کد پاسخ تماس من';
   // Always copy the code to the clipboard first, so it's available to paste
   // manually even if the share sheet is cancelled/unavailable either way.
@@ -1809,7 +1874,10 @@ async function Signaling_share(code, kind){
   // standard Android WebViews do not implement at all.
   if(window.AndroidShare && typeof window.AndroidShare.shareText === 'function'){
     try{
-      window.AndroidShare.shareText(code, title);
+      // If we have a remembered "last used app" and the user didn't ask to
+      // pick a different one, send straight to that app — no chooser dialog.
+      const targetPackage = opts.forceChooser ? '' : (opts.targetPackage || '');
+      window.AndroidShare.shareText(code, title, targetPackage);
       if(copied) Utilities.toast('کد کپی شد و صفحه اشتراک‌گذاری باز شد.');
       return;
     }catch(e){
@@ -1854,6 +1922,7 @@ const DataChannelManager = {
       State.everConnected = true;
       UI.setChatStatus('متصل', 'good');
       UI.setComposerEnabled(true);
+      SoundFX.playConnected();
       // exchange display names
       this.send({kind:'hello', name: Storage.safeGet(Storage.KEY_DISPLAY_NAME) || 'کاربر'});
       ConnectManager.goToChat();
@@ -2000,6 +2069,7 @@ const ReconnectManager = {
       if(pc.iceConnectionState !== 'connected' && pc.iceConnectionState !== 'completed'){
         State.connected = false;
         UI.setChatStatus('خطای اتصال', 'bad');
+        SoundFX.playFailed();
         UI.systemMessage('اتصال قطع شد و تلاش خودکار برای اتصال مجدد هم موفق نبود. اگه در تنظیمات یک TURN شخصی وارد کرده‌اید، آن را بررسی کنید؛ در غیر این صورت برای ادامه باید دوباره با یک کد جدید متصل شوید.');
         FileTransfer.cancelAllActiveTransfers('اتصال قطع شد؛ انتقال فایل ناتمام ماند.');
       }
