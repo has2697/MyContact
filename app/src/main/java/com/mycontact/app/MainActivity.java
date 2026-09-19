@@ -1,10 +1,12 @@
 package com.mycontact.app;
 
 import android.Manifest;
+import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.os.Bundle;
 import android.view.Window;
 import android.view.WindowManager;
+import android.webkit.JavascriptInterface;
 import android.webkit.PermissionRequest;
 import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
@@ -59,6 +61,12 @@ public class MainActivity extends AppCompatActivity {
         settings.setLoadWithOverviewMode(true);
         settings.setUseWideViewPort(true);
         settings.setCacheMode(WebSettings.LOAD_DEFAULT);
+
+        // Exposes shareText() to the page's JavaScript as window.AndroidShare.
+        // Standard Android WebViews do not implement navigator.share() at all,
+        // so the page calls this bridge instead to open the real Android
+        // share sheet (WhatsApp, Telegram, SMS, email, etc.).
+        webView.addJavascriptInterface(new AndroidShareBridge(), "AndroidShare");
 
         webView.setWebViewClient(new WebViewClient() {
             @Override
@@ -149,6 +157,33 @@ public class MainActivity extends AppCompatActivity {
             if (r.equals(resource)) return true;
         }
         return false;
+    }
+
+    /**
+     * JS bridge exposed as window.AndroidShare in MyContact.html. Opens the
+     * real Android share sheet via Intent.ACTION_SEND, since the standard
+     * WebView (unlike the Chrome app) does not implement navigator.share().
+     */
+    private class AndroidShareBridge {
+        @JavascriptInterface
+        public void shareText(final String text, final String title) {
+            runOnUiThread(() -> {
+                try {
+                    Intent sendIntent = new Intent(Intent.ACTION_SEND);
+                    sendIntent.setType("text/plain");
+                    sendIntent.putExtra(Intent.EXTRA_TEXT, text);
+                    if (title != null && !title.isEmpty()) {
+                        sendIntent.putExtra(Intent.EXTRA_SUBJECT, title);
+                    }
+                    Intent chooser = Intent.createChooser(sendIntent, title);
+                    chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    startActivity(chooser);
+                } catch (Exception e) {
+                    Toast.makeText(MainActivity.this, "اشتراک‌گذاری ممکن نشد",
+                            Toast.LENGTH_SHORT).show();
+                }
+            });
+        }
     }
 
     @Override
